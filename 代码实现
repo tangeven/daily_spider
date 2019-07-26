@@ -1,0 +1,113 @@
+# coding=utf-8
+# py3.7
+
+import requests
+import json
+import threading
+from pymongo import MongoClient
+import random
+from queue import Queue
+import time
+from lxml import etree
+
+
+class Daily(object):
+    """今日头条汽车类话题文本抓取"""
+    def __init__(self):
+        self.headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/72.0.3626.119 Safari/537.36 "
+        }
+
+        self.url = 'https://www.toutiao.com/api/pc/feed/?category=news_car&utm_source=toutiao&widen=1&max_behot_time=0&max_behot_time_tmp=%EF%BC%90&'
+        self.text = Queue()
+        self.item_id = Queue()
+        self.next = Queue()
+        self.content_dict = Queue()
+        self.next_url = Queue()
+        self.next_url.put(self.url)
+
+    def getproxy(self):
+        """获得代理列表"""
+        client = MongoClient(host="127.0.0.1",port=27017)
+        proxies = client['proxy']['useful_proxy'].find()
+        proxies_list = []
+        for i in proxies:
+            proxy = {}
+            proxy['http'] = 'http://' + i['proxy']
+            proxies_list.append(proxy)
+        return proxies_list
+
+    def parse(self):
+        """发送请求"""
+        proxies_list = self.getproxy()
+        while True:
+            url = self.next_url.get()
+            self.next_url.task_done()
+            response = requests.get(url,headers=self.headers,proxies=random.choice(proxies_list))
+            response_dict = json.loads(response.content.decode('utf-8'))
+            print(response_dict)
+            response_data_list = response_dict['data']
+            for data in response_data_list:
+                item_id = data['item_id']
+                self.item_id.put(item_id)
+                next_id = response_dict['next']['max_behot_time']
+            next_url = 'https://www.toutiao.com/api/pc/feed/?category=news_car&utm_source=toutiao&widen=1&max_behot_time=0&max_behot_time_tmp={}&'.format(str(next_id))
+            self.next_url.put(next_url)
+            time.sleep(0.2)
+
+    def get_text(self):
+        """拿到文本"""
+        proxies_list = self.getproxy()
+        while True:
+            item_id = self.item_id.get()
+            self.item_id.task_done()
+            item_url = 'https://www.toutiao.com/api/comment/list/?group_id={}&item_id={}&'.format(str(item_id),str(item_id))
+            try:
+                response = requests.get(item_url,headers=self.headers,proxies=random.choice(proxies_list))
+                dict_list = json.loads(response.content)
+                comments_list = dict_list['data']['comments']
+                for comment in comments_list:
+                    text = comment['text']
+                    print(text)
+                    self.text.put(text)
+                print('*' * 100)
+                time.sleep(0.2)
+            except Exception as a:
+                print('请求频繁')
+                time.sleep(2)
+
+    def save(self):
+        """保存"""
+        while True:
+            text = self.text.get()
+            with open('./daily.txt','a') as f:
+                # print(text)
+                # print('*'*100)
+                f.write(text)
+                f.write('\n')
+            self.text.task_done()
+
+    def run(self):
+        """主程序入口,给了40个线程执行"""
+        t = []
+        for i in range(10):
+            t1 = threading.Thread(target=self.parse)
+            t.append(t1)
+
+        for i in range(10):
+            t2 = threading.Thread(target=self.get_text)
+            t.append(t2)
+
+        for i in range(15):
+            t3 = threading.Thread(target=self.save)
+            t.append(t3)
+
+        for thread in t:
+            thread.start()
+
+
+if __name__ == "__main__":
+    d = Daily()
+    d.run()
+
